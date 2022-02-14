@@ -55,6 +55,9 @@ contract UniswapV3Staker is IUniswapV3Staker, Multicall {
     /// @dev deposits[tokenId] => Deposit
     mapping(uint256 => Deposit) public override deposits;
 
+    mapping(address => uint256[]) public ownerTokens;
+    mapping(uint256 => uint256) public ownerTokensIndex;
+
     /// @dev stakes[tokenId][incentiveHash] => Stake
     mapping(uint256 => mapping(bytes32 => Stake)) private _stakes;
 
@@ -158,7 +161,7 @@ contract UniswapV3Staker is IUniswapV3Staker, Multicall {
         );
 
         (, , , , , int24 tickLower, int24 tickUpper, , , , , ) = nonfungiblePositionManager.positions(tokenId);
-
+        addTokenToOwnerMap(from, tokenId);
         deposits[tokenId] = Deposit({owner: from, numberOfStakes: 0, tickLower: tickLower, tickUpper: tickUpper});
         emit DepositTransferred(tokenId, address(0), from);
 
@@ -180,6 +183,8 @@ contract UniswapV3Staker is IUniswapV3Staker, Multicall {
         require(to != address(0), 'UniswapV3Staker::transferDeposit: invalid transfer recipient');
         address owner = deposits[tokenId].owner;
         require(owner == msg.sender, 'UniswapV3Staker::transferDeposit: can only be called by deposit owner');
+        removeTokenFromOwnerMap(owner, tokenId);
+        addTokenToOwnerMap(to, tokenId);
         deposits[tokenId].owner = to;
         emit DepositTransferred(tokenId, owner, to);
     }
@@ -194,11 +199,39 @@ contract UniswapV3Staker is IUniswapV3Staker, Multicall {
         Deposit memory deposit = deposits[tokenId];
         require(deposit.numberOfStakes == 0, 'UniswapV3Staker::withdrawToken: cannot withdraw token while staked');
         require(deposit.owner == msg.sender, 'UniswapV3Staker::withdrawToken: only owner can withdraw token');
-
+        removeTokenFromOwnerMap(deposit.owner, tokenId);
         delete deposits[tokenId];
         emit DepositTransferred(tokenId, deposit.owner, address(0));
 
         nonfungiblePositionManager.safeTransferFrom(address(this), to, tokenId, data);
+    }
+
+    function balanceOf(address owner) external view returns (uint256) {
+        require(owner != address(0), "UniswapV3Staker::balanceOf: balance query for the zero address");
+        return ownerTokens[owner].length;
+    }
+
+    function addTokenToOwnerMap(address owner, uint256 tokenId) internal {
+        uint256 length = ownerTokens[owner].length;
+        ownerTokens[owner].push(tokenId);
+        ownerTokensIndex[tokenId] = length;
+    }
+
+    function removeTokenFromOwnerMap(address owner, uint256 tokenId) internal{
+        uint256 lastTokenIndex = ownerTokens[owner].length - 1;
+        uint256 tokenIndex = ownerTokensIndex[tokenId];
+
+        // When the token to delete is the last token, the swap operation is unnecessary
+        if (tokenIndex != lastTokenIndex) {
+            uint256 lastTokenId = ownerTokens[owner][lastTokenIndex];
+
+            ownerTokens[owner][tokenIndex] = lastTokenId; // Move the last token to the slot of the to-delete token
+            ownerTokensIndex[lastTokenId] = tokenIndex; // Update the moved token's index
+        }
+
+        // This also deletes the contents at the last position of the array
+        delete ownerTokensIndex[tokenId];
+        delete ownerTokens[owner][lastTokenIndex];
     }
 
     /// @inheritdoc IUniswapV3Staker
